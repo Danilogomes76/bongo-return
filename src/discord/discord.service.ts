@@ -218,16 +218,27 @@ export class DiscordService implements OnModuleInit {
     voiceChannel: VoiceBasedChannel,
     guildMember: GuildMember
   ) {
-    // Processa em background sem bloquear
-    this.musicService.playFromHttp(interactionData, voiceChannel, guildMember)
-      .then(result => {
-        // Envia resultado via webhook
-        return this.sendWebhookFollowup(interactionData, result.message || '✅ Música adicionada.');
-      })
-      .catch(error => {
-        this.logger.error('Erro ao processar comando em background:', error);
-        return this.sendWebhookFollowup(interactionData, '❌ Erro ao processar o comando.');
-      });
+    try {
+      // Processa a música e obtém o resultado
+      const result = await this.musicService.playFromHttp(interactionData, voiceChannel, guildMember);
+
+      // Aguarda um pouco para garantir que a música foi processada
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Obtém o painel atualizado da fila
+      const panel = this.musicService.getMusicPanelForGuild(interactionData.guild_id);
+
+      if (panel && panel.embed && panel.components) {
+        // Envia o painel completo via webhook
+        await this.sendWebhookFollowupWithPanel(interactionData, panel.embed, panel.components);
+      } else {
+        // Fallback: envia apenas a mensagem de texto
+        await this.sendWebhookFollowup(interactionData, result.message || '✅ Música adicionada.');
+      }
+    } catch (error) {
+      this.logger.error('Erro ao processar comando em background:', error);
+      await this.sendWebhookFollowup(interactionData, '❌ Erro ao processar o comando.');
+    }
   }
 
   // Envia mensagem via webhook followup
@@ -244,6 +255,25 @@ export class DiscordService implements OnModuleInit {
       });
     } catch (error) {
       this.logger.error('Erro ao enviar webhook followup:', error);
+    }
+  }
+
+  // Envia painel de música completo (embed + botões) via webhook
+  private async sendWebhookFollowupWithPanel(
+    interactionData: DiscordInteractionData,
+    embed: any,
+    components: any[]
+  ) {
+    try {
+      const webhookUrl = `/webhooks/${interactionData.application_id}/${interactionData.token}`;
+      await this.rest.post(webhookUrl as any, {
+        body: {
+          embeds: [embed],
+          components: components
+        }
+      });
+    } catch (error) {
+      this.logger.error('Erro ao enviar painel via webhook:', error);
     }
   }
 

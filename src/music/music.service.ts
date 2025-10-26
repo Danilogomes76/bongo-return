@@ -373,6 +373,22 @@ export class MusicService {
     }
   }
 
+  // Retorna o painel de música atual para um servidor (usado para webhook)
+  getMusicPanelForGuild(guildId: string): { embed: any; components: any[] } | null {
+    const queue = this.queues.get(guildId);
+    if (!queue || !queue.currentTrack) {
+      return null;
+    }
+
+    const embed = this.createMusicEmbed(queue.currentTrack, queue);
+    const components = this.createMusicControls(queue);
+
+    return {
+      embed: embed.toJSON(),
+      components: components.map(row => row.toJSON())
+    };
+  }
+
   // --- Funções de Utilitário para o Painel ---
 
   private createMusicEmbed(track: Track, queue: GuildQueue): EmbedBuilder {
