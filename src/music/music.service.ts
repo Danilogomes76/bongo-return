@@ -272,6 +272,9 @@ export class MusicService {
       return;
     }
 
+    // Envia resposta imediata para evitar timeout do Discord
+    await interaction.editReply({ content: '🎵 Processando...' });
+
     // Lógica para buscar e adicionar a música na fila
     const track = await this.searchAndDownload(query);
 
@@ -284,11 +287,24 @@ export class MusicService {
     track.requestedBy = member.displayName;
     queue.tracks.push(track);
 
-    await interaction.editReply({ content: `Adicionado à fila: **${track.title}**` });
-
     // Se não há nada tocando, começa a reproduzir imediatamente
     if (queue.player.state.status === AudioPlayerStatus.Idle && !queue.currentTrack) {
+      // Prepara o painel de música imediatamente (antes de reproduzir)
+      const embed = this.createMusicEmbed(track, queue);
+      const components = this.createMusicControls(queue);
+
+      // Envia o painel imediatamente na resposta da interação
+      await interaction.editReply({
+        embeds: [embed],
+        components: components,
+        content: '' // Remove a mensagem "Processando..."
+      });
+
+      // Agora reproduz a música
       this.playNext(guildId);
+    } else {
+      // Se já está tocando algo, apenas adiciona à fila
+      await interaction.editReply({ content: `✅ Adicionado à fila: **${track.title}**` });
     }
   }
 
@@ -344,12 +360,16 @@ export class MusicService {
     const resource = createAudioResource(nextTrack.filePath);
     queue.player.play(resource);
 
-    // Envia o painel de música
-    const embed = this.createMusicEmbed(nextTrack, queue);
-    const components = this.createMusicControls(queue);
+    // Só envia painel se não for a primeira música (para evitar duplicação)
+    // A primeira música já enviou o painel na resposta da interação
+    if (queue.tracks.length > 0) {
+      // Envia o painel de música apenas para músicas seguintes
+      const embed = this.createMusicEmbed(nextTrack, queue);
+      const components = this.createMusicControls(queue);
 
-    if (queue.textChannel && 'send' in queue.textChannel) {
-      queue.textChannel.send({ embeds: [embed], components: components });
+      if (queue.textChannel && 'send' in queue.textChannel) {
+        queue.textChannel.send({ embeds: [embed], components: components });
+      }
     }
   }
 

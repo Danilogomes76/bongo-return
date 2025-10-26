@@ -1,6 +1,6 @@
 import { REST } from '@discordjs/rest';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ButtonInteraction, ChatInputCommandInteraction, Client, GatewayIntentBits, Partials, Routes, SlashCommandBuilder } from 'discord.js';
+import { ButtonInteraction, ChatInputCommandInteraction, Client, GatewayIntentBits, GuildMember, Partials, Routes, SlashCommandBuilder, VoiceBasedChannel } from 'discord.js';
 import { ConfigService } from '../config/config.service';
 import { MusicService } from '../music/music.service';
 import { DiscordInteractionData } from '../types/discord.types';
@@ -171,14 +171,14 @@ export class DiscordService implements OnModuleInit {
             };
           }
 
-          // Usa o novo método do MusicService com as informações reais
-          const result = await this.musicService.playFromHttp(interactionData, voiceChannel, guildMember);
+          // Retorna defer para mostrar "Bongo está pensando..."
+          // O processamento ocorre em background
+          this.processPlayCommandInBackground(interactionData, voiceChannel, guildMember);
 
           return {
-            type: 4, // CHANNEL_MESSAGE_WITH_SOURCE
+            type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
             data: {
-              content: result.message,
-              flags: result.success ? 0 : 64 // ephemeral se erro
+              flags: 0 // não ephemeral
             }
           };
         } catch (error) {
@@ -209,6 +209,41 @@ export class DiscordService implements OnModuleInit {
           flags: 64 // ephemeral
         }
       };
+    }
+  }
+
+  // Processa o comando de play em background após o defer
+  private async processPlayCommandInBackground(
+    interactionData: DiscordInteractionData,
+    voiceChannel: VoiceBasedChannel,
+    guildMember: GuildMember
+  ) {
+    // Processa em background sem bloquear
+    this.musicService.playFromHttp(interactionData, voiceChannel, guildMember)
+      .then(result => {
+        // Envia resultado via webhook
+        return this.sendWebhookFollowup(interactionData, result.message || '✅ Música adicionada.');
+      })
+      .catch(error => {
+        this.logger.error('Erro ao processar comando em background:', error);
+        return this.sendWebhookFollowup(interactionData, '❌ Erro ao processar o comando.');
+      });
+  }
+
+  // Envia mensagem via webhook followup
+  private async sendWebhookFollowup(
+    interactionData: DiscordInteractionData,
+    content: string
+  ) {
+    try {
+      const webhookUrl = `/webhooks/${interactionData.application_id}/${interactionData.token}`;
+      await this.rest.post(webhookUrl as any, {
+        body: {
+          content: content
+        }
+      });
+    } catch (error) {
+      this.logger.error('Erro ao enviar webhook followup:', error);
     }
   }
 
