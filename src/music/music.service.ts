@@ -437,15 +437,20 @@ export class MusicService {
       return;
     }
 
+    console.log(interaction.customId, "interaction.customId");
+
+    // Para o caso de 'stop', não atualiza o painel (já foi atualizado pelo método stop)
+    if (interaction.customId === 'stop') {
+      await this.stop(guildId, interaction);
+      return;
+    }
+
     switch (interaction.customId) {
       case 'skip':
         this.skip(guildId);
         break;
       case 'pause_resume':
         this.pauseResume(guildId);
-        break;
-      case 'stop':
-        this.stop(guildId);
         break;
       case 'loop':
         this.toggleLoop(guildId);
@@ -462,7 +467,7 @@ export class MusicService {
       //   break;
     }
 
-    // Atualiza o painel após a ação
+    // Atualiza o painel após a ação (exceto para stop)
     if (queue.currentTrack) {
       const embed = this.createMusicEmbed(queue.currentTrack, queue);
       const components = this.createMusicControls(queue);
@@ -488,18 +493,68 @@ export class MusicService {
     }
   }
 
-  async stop(guildId: string) {
+  async stop(guildId: string, interaction?: ButtonInteraction) {
     const queue = this.queues.get(guildId);
-    if (queue) {
+    if (queue && queue.currentTrack) {
+      const trackTitle = queue.currentTrack.title;
+      const filePath = queue.currentTrack.filePath;
+
+      // Para a reprodução primeiro
       queue.player.stop();
+
+      // Destrói a conexão e remove da fila
       queue.connection.destroy();
       this.queues.delete(guildId);
 
-      // Limpa o arquivo da música atual
-      if (queue.currentTrack && queue.currentTrack.filePath) {
-        fs.unlink(queue.currentTrack.filePath, (err) => {
-          if (err) this.logger.error(`Erro ao deletar arquivo ao parar: ${err.message}`);
+      // Envia mensagem de confirmação ANTES de deletar o arquivo
+      const message = `🎵 Música **${trackTitle}** removida`;
+
+      if (interaction) {
+        // Responde à interação do botão
+        await interaction.editReply({
+          content: message,
+          embeds: [],
+          components: []
         });
+      } else {
+        // Envia mensagem no canal de texto
+        if (queue.textChannel && 'send' in queue.textChannel) {
+          queue.textChannel.send(message);
+        }
+      }
+
+      // Aguarda bastante tempo para garantir que o player liberou o arquivo
+      // Deleta o arquivo de forma assíncrona sem bloquear a resposta
+      if (filePath) {
+        setTimeout(() => {
+          fs.unlink(filePath, (err) => {
+            if (err) {
+              this.logger.error(`Erro ao deletar arquivo ao parar: ${err.message}`);
+              // Tenta novamente após mais tempo
+              setTimeout(() => {
+                fs.unlink(filePath, (err2) => {
+                  if (err2) {
+                    this.logger.error(`Erro ao deletar arquivo (segunda tentativa): ${err2.message}`);
+                    // Terceira tentativa
+                    setTimeout(() => {
+                      fs.unlink(filePath, (err3) => {
+                        if (err3) {
+                          this.logger.error(`Erro ao deletar arquivo (terceira tentativa): ${err3.message}`);
+                        } else {
+                          this.logger.log(`Arquivo deletado (terceira tentativa): ${filePath}`);
+                        }
+                      });
+                    }, 5000);
+                  } else {
+                    this.logger.log(`Arquivo deletado (segunda tentativa): ${filePath}`);
+                  }
+                });
+              }, 5000);
+            } else {
+              this.logger.log(`Arquivo deletado: ${filePath}`);
+            }
+          });
+        }, 3000);
       }
     }
   }

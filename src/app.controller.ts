@@ -65,6 +65,24 @@ export class AppController {
         }
       }
 
+      // Para interações de botão (tipo 3), processa através do DiscordService
+      if (req.body?.type === 3) {
+        try {
+          await this.discordService.handleButtonInteractionFromHttp(req.body);
+          // Retorna ACK para interações de botão
+          return res.status(200).json({ type: 1 });
+        } catch (error) {
+          console.error('Erro ao processar interação de botão:', error);
+          return res.status(200).json({
+            type: 4,
+            data: {
+              content: '❌ Erro ao processar interação.',
+              flags: 64 // ephemeral
+            }
+          });
+        }
+      }
+
       // Para outros tipos de interação, retorna sucesso
       return res.status(200).json({
         type: 1,

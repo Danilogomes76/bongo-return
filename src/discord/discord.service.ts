@@ -277,6 +277,56 @@ export class DiscordService implements OnModuleInit {
     }
   }
 
+  // Processa interação de botão via HTTP
+  async handleButtonInteractionFromHttp(interactionData: any) {
+    try {
+      // Armazena a mensagem de resposta para enviar ao final
+      let responseMessage: string | null = null;
+
+      // Cria uma interação mock para usar com o MusicService
+      const mockInteraction = {
+        customId: interactionData.data?.custom_id,
+        guildId: interactionData.guild_id,
+        guild: {
+          id: interactionData.guild_id
+        },
+        deferUpdate: async () => {
+          // ACK para botões já foi enviado pelo controller
+          this.logger.log('Button interaction acknowledged');
+        },
+        editReply: async (content: any) => {
+          // Para botões, não podemos editar a mensagem original via webhook
+          // Apenas armazena a mensagem de resposta
+          if (content.content) {
+            responseMessage = content.content;
+          }
+        }
+      };
+
+      // Deferred update
+      await mockInteraction.deferUpdate();
+
+      // Processa a interação do botão através do MusicService
+      await this.musicService.handleControlInteraction(mockInteraction as any);
+
+      // Se houver mensagem de resposta, envia via webhook followup
+      if (responseMessage) {
+        try {
+          const webhookUrl = `/webhooks/${interactionData.application_id}/${interactionData.token}`;
+          await this.rest.post(webhookUrl as any, {
+            body: {
+              content: responseMessage
+            }
+          });
+        } catch (error) {
+          this.logger.error('Erro ao enviar mensagem de resposta:', error);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Erro ao processar interação de botão via HTTP:', error);
+    }
+  }
+
   private async handleButtonInteraction(interaction: ButtonInteraction) {
     try {
       // Responde imediatamente para evitar timeout
