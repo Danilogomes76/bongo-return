@@ -51,17 +51,21 @@ export class MusicService {
 
   // --- Funções de Utilitário ---
 
-  private async searchAndDownload(query: string): Promise<Track | Track[] | null> {
+  private async searchAndDownload(query: string): Promise<Track | null> {
     const isUrl = query.startsWith('http');
-    const tempFilePath = path.join(this.tempDir, `audio-${Date.now()}-%(title)s.%(ext)s`);
+    const timestamp = Date.now();
+    const tempFilePath = path.join(this.tempDir, `audio-${timestamp}-%(title)s.%(ext)s`);
 
     // Opções do yt-dlp:
     // -x: Extrai apenas o áudio
     // --audio-format mp3: Converte para mp3 (necessita do ffmpeg)
     // --print-json: Imprime o JSON de metadados
     // --output: Define o template de nome de arquivo
+    // --no-playlist: Baixa apenas o vídeo, ignora playlists automáticas (como &list=RD&start_radio=1)
+    // --extractor-args "youtube:player_client=android": Usa cliente Android para evitar bloqueios 403
     // --default-search ytsearch: Se não for URL, pesquisa no YouTube
-    const ytDlpCommand = `yt-dlp -x --audio-format mp3 --print-json --output "${tempFilePath}" ${isUrl ? '' : '--default-search "ytsearch"'} ${isUrl ? query : `1:${query}`}`;
+    // IMPORTANTE: URLs devem estar entre aspas para evitar que o shell interprete caracteres especiais (&, etc)
+    const ytDlpCommand = `yt-dlp -x --audio-format mp3 --print-json ${isUrl ? '--no-playlist --extractor-args "youtube:player_client=android"' : ''} --output "${tempFilePath}" ${isUrl ? '' : '--default-search "ytsearch"'} ${isUrl ? `"${query}"` : `1:${query}`}`;
 
     return new Promise((resolve) => {
       exec(ytDlpCommand, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
@@ -82,16 +86,10 @@ export class MusicService {
           for (const line of lines) {
             const info = JSON.parse(line);
 
-            // Verifica se é uma playlist e se tem entradas
-            if (info._type === 'playlist' && info.entries) {
-              // Se for playlist, processa as entradas
-              for (const entry of info.entries) {
-                const track = this.mapYtDlpInfoToTrack(entry);
-                if (track) tracks.push(track);
-              }
-            } else if (info._type !== 'playlist') {
-              // Se for um único vídeo
-              const track = this.mapYtDlpInfoToTrack(info);
+            // Com --no-playlist, só processamos vídeos individuais, NÃO playlists
+            // Ignora entradas de playlist automática e processa apenas o vídeo
+            if (info._type === 'video' || (!info._type && info.title && !info.entries)) {
+              const track = this.mapYtDlpInfoToTrack(info, timestamp);
               if (track) tracks.push(track);
             }
           }
@@ -100,8 +98,8 @@ export class MusicService {
             return resolve(null);
           }
 
-          // Se for uma playlist, retorna o array de tracks. Se for uma única música, retorna o objeto Track.
-          resolve(tracks.length > 1 ? tracks : tracks[0]);
+          // Retorna apenas o primeiro vídeo (ignora qualquer playlist)
+          resolve(tracks[0]);
 
         } catch (parseError) {
           this.logger.error(`Erro ao processar JSON do yt-dlp: ${parseError.message}`);
@@ -111,18 +109,25 @@ export class MusicService {
     });
   }
 
-  private mapYtDlpInfoToTrack(info: any): Track | null {
+  private mapYtDlpInfoToTrack(info: any, timestamp: number): Track | null {
     if (!info.url || !info.title || !info.duration) return null;
 
-    // O yt-dlp retorna o caminho do arquivo no campo 'filepath' após o download.
-    // Como estamos usando --print-json, o 'filepath' não estará no JSON de metadados,
-    // mas o template de saída é conhecido. Vamos tentar inferir o caminho real
-    // ou deixá-lo vazio por enquanto e preencher após o download ser confirmado.
-    // Para simplificar, vamos assumir que o download ocorreu e o arquivo foi renomeado.
-    // O yt-dlp imprime o JSON de metadados APÓS o download.
+    // O yt-dlp retorna o caminho do arquivo no campo '_filename' após o download.
+    // IMPORTANTE: Mesmo com --audio-format mp3, o _filename pode vir com extensão diferente.
+    // Vamos usar a extensão correta (mp3) ou a extensão do arquivo baixado.
+    let filePath = info._filename || '';
 
-    // O campo '_filename' no JSON final (após o download) deve conter o caminho real.
-    const filePath = info._filename || '';
+    if (!filePath) {
+      // Constrói o caminho esperado baseado no título do vídeo
+      const sanitizedTitle = info.title.replace(/[<>:"/\\|?*]/g, '').substring(0, 100);
+      filePath = path.join(this.tempDir, `audio-${timestamp}-${sanitizedTitle}.mp3`);
+    } else {
+      // Corrige a extensão se necessário (gera como mp3)
+      const ext = path.extname(filePath);
+      if (ext !== '.mp3') {
+        filePath = filePath.replace(/\.[^.]+$/, '.mp3');
+      }
+    }
 
     return {
       title: info.title,
@@ -268,31 +273,20 @@ export class MusicService {
     }
 
     // Lógica para buscar e adicionar a música na fila
-    const tracksOrTrack = await this.searchAndDownload(query);
+    const track = await this.searchAndDownload(query);
 
-    if (!tracksOrTrack) {
+    if (!track) {
       await interaction.editReply({ content: `Não consegui encontrar resultados para: \`${query}\`` });
       return;
     }
 
-    let replyMessage = '';
+    // Adiciona a música à fila
+    track.requestedBy = member.displayName;
+    queue.tracks.push(track);
 
-    if (Array.isArray(tracksOrTrack)) {
-      // É uma playlist
-      tracksOrTrack.forEach(track => {
-        track.requestedBy = member.displayName;
-        queue.tracks.push(track);
-      });
-      replyMessage = `Adicionado **${tracksOrTrack.length}** músicas da playlist à fila.`;
-    } else {
-      // É uma única música
-      tracksOrTrack.requestedBy = member.displayName;
-      queue.tracks.push(tracksOrTrack);
-      replyMessage = `Adicionado à fila: **${tracksOrTrack.title}**`;
-    }
+    await interaction.editReply({ content: `Adicionado à fila: **${track.title}**` });
 
-    await interaction.editReply({ content: replyMessage });
-
+    // Se não há nada tocando, começa a reproduzir imediatamente
     if (queue.player.state.status === AudioPlayerStatus.Idle && !queue.currentTrack) {
       this.playNext(guildId);
     }
@@ -339,11 +333,14 @@ export class MusicService {
 
     if (!nextTrack.filePath || !fs.existsSync(nextTrack.filePath)) {
       this.logger.error(`Caminho do arquivo de áudio não encontrado para: ${nextTrack.title}`);
+      this.logger.error(`Caminho esperado: ${nextTrack.filePath}`);
+      this.logger.error(`Arquivos em temp_music: ${fs.readdirSync(this.tempDir).join(', ')}`);
       // Tenta a próxima música
       this.playNext(guildId);
       return;
     }
 
+    this.logger.log(`Reproduzindo: ${nextTrack.title} do arquivo: ${nextTrack.filePath}`);
     const resource = createAudioResource(nextTrack.filePath);
     queue.player.play(resource);
 
